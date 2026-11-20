@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "gaga-dj-db",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "adbfa7c2-d68c-4fa2-949f-fc096aea6698",
       "migrations_dir": "migrations"
     }
   ],
