@@ -1,0 +1,6 @@
+{
+  "name": "GAGA DJ — MR VIBES | THE PARTY ACTIVATORS.",
+  "description": "Official site of GAGA DJ (MR VIBES) — THE PARTY ACTIVATORS. Live mixes, stage videos, tour dates, news, brand activations, and bookings.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
