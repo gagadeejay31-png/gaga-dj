@@ -1,4 +1,4 @@
-import { Edit3, Inbox, Lock, LogOut, Plus, Trash2, Upload, X } from 'lucide-react';
+import { AlertCircle, Check, Copy, Edit3, Inbox, Lock, LogOut, Plus, Trash2, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { BookingInquiry, CONTENT_CATEGORIES, ContentCategory, ContentItem } from '../types/content';
 
@@ -10,18 +10,36 @@ interface AdminDashboardModalProps {
 
 const TOKEN_STORAGE_KEY = 'gaga_admin_token';
 
+const FIX_PERMISSIONS_SQL = `-- Grant API role permissions & confirm gagadeejay31@gmail.com
+grant usage on schema public to anon, authenticated;
+grant select on public.content_items to anon, authenticated;
+grant insert, update, delete on public.content_items to authenticated;
+grant insert on public.inquiries to anon, authenticated;
+grant select, delete on public.inquiries to authenticated;
+
+-- Confirm admin email in Supabase Auth if pending verification
+update auth.users
+set email_confirmed_at = coalesce(email_confirmed_at, now())
+where lower(email) = 'gagadeejay31@gmail.com';
+
+notify pgrst, 'reload schema';`;
+
 export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDashboardModalProps) {
   const [statusLoading, setStatusLoading] = useState(true);
-  const [setupRequired, setSetupRequired] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [tablesExist, setTablesExist] = useState(true);
+  const [permissionsReady, setPermissionsReady] = useState(true);
+  const [copiedSql, setCopiedSql] = useState(false);
   const [adminEmail, setAdminEmail] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(() => sessionStorage.getItem(TOKEN_STORAGE_KEY));
 
-  // Login / Setup form state
+  // Login / Register state for Supabase Auth
+  const [authMode, setAuthMode] = useState<'LOGIN' | 'SIGNUP'>('LOGIN');
   const [emailInput, setEmailInput] = useState('');
-  const [passcodeInput, setPasscodeInput] = useState('');
-  const [confirmPasscode, setConfirmPasscode] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
 
   // Dashboard tabs & data
@@ -60,13 +78,15 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
     try {
       const res = await fetch('/api/admin/status', { headers: authHeaders() });
       const data = (await res.json()) as {
-        setupRequired: boolean;
         authenticated: boolean;
         email: string | null;
+        tablesExist: boolean;
+        permissionsReady: boolean;
       };
-      setSetupRequired(data.setupRequired);
       setAuthenticated(data.authenticated);
       setAdminEmail(data.email);
+      setTablesExist(data.tablesExist);
+      setPermissionsReady(data.permissionsReady);
       if (!data.authenticated && token) {
         sessionStorage.removeItem(TOKEN_STORAGE_KEY);
         setToken(null);
@@ -85,15 +105,21 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
         fetch('/api/admin/inquiries', { headers: authHeaders() }),
       ]);
       if (contentRes.ok) {
-        const cData = (await contentRes.json()) as { items: ContentItem[] };
+        const cData = (await contentRes.json()) as {
+          items: ContentItem[];
+          tablesExist?: boolean;
+          permissionsReady?: boolean;
+        };
         setItems(cData.items ?? []);
+        if (typeof cData.tablesExist === 'boolean') setTablesExist(cData.tablesExist);
+        if (typeof cData.permissionsReady === 'boolean') setPermissionsReady(cData.permissionsReady);
       }
       if (inqRes.ok) {
         const iData = (await inqRes.json()) as { inquiries: BookingInquiry[] };
         setInquiries(iData.inquiries ?? []);
       }
     } catch {
-      // ignore transient network failures
+      // ignore transient failures
     }
   }, [authHeaders]);
 
@@ -112,24 +138,27 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
-    if (setupRequired && passcodeInput !== confirmPasscode) {
-      setAuthError('Passcodes do not match.');
+    setAuthMessage(null);
+    if (authMode === 'SIGNUP' && passwordInput !== confirmPassword) {
+      setAuthError('Passwords do not match.');
       return;
     }
 
     setAuthBusy(true);
     try {
-      const endpoint = setupRequired ? '/api/admin/setup' : '/api/admin/login';
+      const endpoint = authMode === 'SIGNUP' ? '/api/admin/signup' : '/api/admin/login';
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: emailInput.trim(),
-          passcode: passcodeInput,
+          password: passwordInput,
         }),
       });
       const data = (await res.json()) as {
         authenticated?: boolean;
+        confirmationRequired?: boolean;
+        message?: string;
         email?: string;
         token?: string;
         error?: string;
@@ -138,17 +167,53 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
         setAuthError(data.error || 'Authentication failed.');
         return;
       }
+      if (data.confirmationRequired) {
+        setAuthMessage(
+          data.message ||
+            'Account created. Verify your email or run the confirmation SQL, then sign in.'
+        );
+        setAuthMode('LOGIN');
+        setPasswordInput('');
+        setConfirmPassword('');
+        return;
+      }
       if (data.token) {
         sessionStorage.setItem(TOKEN_STORAGE_KEY, data.token);
         setToken(data.token);
       }
       setAuthenticated(true);
-      setSetupRequired(false);
       setAdminEmail(data.email ?? null);
-      setPasscodeInput('');
-      setConfirmPasscode('');
+      setPasswordInput('');
+      setConfirmPassword('');
     } catch {
       setAuthError('Network error during authentication.');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleResendOrReset = async (kind: 'resend-confirmation' | 'reset-password') => {
+    setAuthError(null);
+    setAuthMessage(null);
+    if (!emailInput.trim()) {
+      setAuthError('Enter your administrator email above first.');
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      const res = await fetch(`/api/admin/${kind}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: emailInput.trim() }),
+      });
+      const data = (await res.json()) as { message?: string; error?: string };
+      if (!res.ok) {
+        setAuthError(data.error || 'Request failed.');
+      } else {
+        setAuthMessage(data.message || 'Email sent.');
+      }
+    } catch {
+      setAuthError('Network error.');
     } finally {
       setAuthBusy(false);
     }
@@ -160,6 +225,16 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
     setToken(null);
     setAuthenticated(false);
     setAdminEmail(null);
+  };
+
+  const handleCopySql = async () => {
+    try {
+      await navigator.clipboard.writeText(FIX_PERMISSIONS_SQL);
+      setCopiedSql(true);
+      setTimeout(() => setCopiedSql(false), 2500);
+    } catch {
+      // ignore clipboard errors
+    }
   };
 
   const resetEditor = (defaultCat: ContentCategory = 'NEWS') => {
@@ -365,28 +440,94 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6 sm:p-8">
+          {(!tablesExist || !permissionsReady) && (
+            <div className="mb-6 border border-amber-500/40 bg-amber-950/25 p-4 text-xs text-amber-200 space-y-3">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                <div>
+                  {!tablesExist
+                    ? 'Supabase is connected, but the database tables (`content_items`, `inquiries`) have not been created yet.'
+                    : 'Your Supabase tables (`content_items`, `inquiries`) exist, but API role permissions (`GRANT`) have not been granted yet (error 42501). Run this quick SQL fix in your Supabase SQL Editor:'}
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => void handleCopySql()}
+                  className="inline-flex items-center gap-1.5 border border-amber-400/50 bg-black/60 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-200 hover:bg-amber-400 hover:text-black transition-colors cursor-pointer"
+                >
+                  {copiedSql ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedSql ? 'Copied Fix SQL' : 'Copy GRANT & Auth Fix SQL'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void checkStatus()}
+                  className="border border-white/20 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white hover:border-cyan-400 cursor-pointer"
+                >
+                  Re-check Connection
+                </button>
+              </div>
+            </div>
+          )}
+
           {statusLoading ? (
             <div className="py-16 text-center text-xs uppercase tracking-[0.2em] text-zinc-400">
-              Verifying Administrator Status...
+              Connecting to Supabase Backend...
             </div>
           ) : !authenticated ? (
             <div className="mx-auto max-w-md py-6">
+              <div className="flex gap-2 mb-6 border-b border-white/10 pb-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('LOGIN');
+                    setAuthError(null);
+                  }}
+                  className={`px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] cursor-pointer ${
+                    authMode === 'LOGIN'
+                      ? 'bg-white text-black'
+                      : 'border border-white/15 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('SIGNUP');
+                    setAuthError(null);
+                  }}
+                  className={`px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] cursor-pointer ${
+                    authMode === 'SIGNUP'
+                      ? 'bg-white text-black'
+                      : 'border border-white/15 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  Create Admin Account
+                </button>
+              </div>
+
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-400">
-                {setupRequired ? 'First-Time Owner Initialization' : 'Restricted Administrator Access'}
+                Supabase Backend Authorization
               </p>
               <h2 className="mt-2 font-display text-3xl font-bold uppercase text-white">
-                {setupRequired ? 'Set Your Admin Passcode' : 'Administrator Sign In'}
+                {authMode === 'SIGNUP' ? 'Register Administrator' : 'Administrator Sign In'}
               </h2>
               <p className="mt-2 text-sm text-zinc-400">
-                {setupRequired
-                  ? 'Initialize private studio access using your authorized administrator email. This passcode is hashed on the server.'
-                  : 'Authorized administrator access only. Sign in to upload media and publish content.'}
+                {authMode === 'SIGNUP'
+                  ? 'Register your Supabase Auth password using the authorized administrator email.'
+                  : 'Authorized administrator access only. Sign in via Supabase Auth to publish content.'}
               </p>
 
               <form onSubmit={handleAuthSubmit} className="mt-6 space-y-4">
                 {authError && (
                   <div className="border border-red-500/40 bg-red-950/30 px-4 py-3 text-xs text-red-300">
                     {authError}
+                  </div>
+                )}
+                {authMessage && (
+                  <div className="border border-cyan-500/40 bg-cyan-950/30 px-4 py-3 text-xs text-cyan-200">
+                    {authMessage}
                   </div>
                 )}
 
@@ -406,33 +547,33 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
                 </div>
 
                 <div>
-                  <label htmlFor="admin-passcode" className="block text-xs uppercase tracking-[0.14em] text-zinc-400">
-                    {setupRequired ? 'Create Private Passcode (min 8 chars)' : 'Passcode'}
+                  <label htmlFor="admin-password" className="block text-xs uppercase tracking-[0.14em] text-zinc-400">
+                    Password
                   </label>
                   <input
-                    id="admin-passcode"
+                    id="admin-password"
                     type="password"
                     required
-                    minLength={setupRequired ? 8 : 1}
-                    value={passcodeInput}
-                    onChange={(e) => setPasscodeInput(e.target.value)}
+                    minLength={authMode === 'SIGNUP' ? 8 : 1}
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
                     placeholder="••••••••"
                     className="mt-1.5 w-full border border-white/15 bg-black px-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-cyan-400 focus:outline-none"
                   />
                 </div>
 
-                {setupRequired && (
+                {authMode === 'SIGNUP' && (
                   <div>
-                    <label htmlFor="admin-passcode-confirm" className="block text-xs uppercase tracking-[0.14em] text-zinc-400">
-                      Confirm Passcode
+                    <label htmlFor="admin-password-confirm" className="block text-xs uppercase tracking-[0.14em] text-zinc-400">
+                      Confirm Password
                     </label>
                     <input
-                      id="admin-passcode-confirm"
+                      id="admin-password-confirm"
                       type="password"
                       required
                       minLength={8}
-                      value={confirmPasscode}
-                      onChange={(e) => setConfirmPasscode(e.target.value)}
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
                       placeholder="••••••••"
                       className="mt-1.5 w-full border border-white/15 bg-black px-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:border-cyan-400 focus:outline-none"
                     />
@@ -445,15 +586,33 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
                   className="w-full bg-white py-3.5 text-xs font-semibold uppercase tracking-[0.16em] text-black hover:bg-cyan-400 transition-colors cursor-pointer disabled:opacity-50"
                 >
                   {authBusy
-                    ? 'Verifying...'
-                    : setupRequired
-                      ? 'Initialize Admin Access'
+                    ? 'Authenticating...'
+                    : authMode === 'SIGNUP'
+                      ? 'Register Admin Account'
                       : 'Sign In to Dashboard'}
                 </button>
+
+                {authMode === 'LOGIN' && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-xs text-zinc-400">
+                    <button
+                      type="button"
+                      onClick={() => void handleResendOrReset('resend-confirmation')}
+                      className="hover:text-cyan-400 underline underline-offset-4 cursor-pointer"
+                    >
+                      Resend verification email
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleResendOrReset('reset-password')}
+                      className="hover:text-cyan-400 underline underline-offset-4 cursor-pointer"
+                    >
+                      Reset password
+                    </button>
+                  </div>
+                )}
               </form>
             </div>
           ) : editorOpen ? (
-            /* Content Create / Edit Form */
             <div>
               <div className="flex items-center justify-between border-b border-white/10 pb-4">
                 <h3 className="font-display text-2xl font-bold uppercase text-white">
@@ -540,7 +699,6 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
                   </div>
                 </div>
 
-                {/* Category-Specific Metadata */}
                 {category === 'EVENTS' && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 border border-white/10 p-4 bg-black/50">
                     <div>
@@ -623,7 +781,6 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
                   </div>
                 )}
 
-                {/* Real File Upload Slots */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                   <div className="border border-white/12 p-4 bg-black/60">
                     <div className="text-xs uppercase tracking-[0.14em] text-zinc-300 font-semibold">
@@ -725,9 +882,7 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
               </form>
             </div>
           ) : (
-            /* Authenticated Admin Overview */
             <div>
-              {/* Admin Tabs + Publish CTA */}
               <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-5">
                 <div className="flex items-center gap-2">
                   <button
@@ -769,7 +924,6 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
 
               {activeTab === 'CONTENT' ? (
                 <div className="mt-6">
-                  {/* Category Filter Strip */}
                   <div className="flex flex-wrap gap-1.5 mb-6">
                     <button
                       type="button"
