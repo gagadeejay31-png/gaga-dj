@@ -1,6 +1,7 @@
 import { Check, FileText, Mail, MapPin, X } from 'lucide-react';
 import { useState } from 'react';
 import { ARTIST_IDENTITY } from '../constants/assets';
+import { submitPublicInquiry } from '../lib/supabaseClient';
 
 export function ContactSection() {
   const [name, setName] = useState('');
@@ -20,20 +21,15 @@ export function ContactSection() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch('/api/inquiries', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'BOOKING',
-          name: name.trim(),
-          email: email.trim(),
-          eventType,
-          eventDate,
-          venueCity: cityVenue.trim(),
-          notes: details.trim(),
-        }),
+      await submitPublicInquiry({
+        type: 'BOOKING',
+        name: name.trim(),
+        email: email.trim(),
+        eventType,
+        eventDate,
+        venueCity: cityVenue.trim(),
+        notes: details.trim(),
       });
-      if (!res.ok) throw new Error('Failed to send booking inquiry.');
       setSubmitted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to send booking request.');

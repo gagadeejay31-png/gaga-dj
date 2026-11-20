@@ -1,5 +1,21 @@
 import { AlertCircle, Check, Copy, Edit3, Inbox, Lock, LogOut, Plus, Trash2, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import {
+  ADMIN_EMAIL,
+  adminResendConfirmation,
+  adminResetPassword,
+  adminSignIn,
+  adminSignOut,
+  adminSignUp,
+  checkSupabaseStatus,
+  createContentItem,
+  deleteAdminInquiry,
+  deleteContentItem,
+  fetchAdminInquiries,
+  fetchAllAdminContent,
+  updateContentItem,
+  uploadMediaFile,
+} from '../lib/supabaseClient';
 import { BookingInquiry, CONTENT_CATEGORIES, ContentCategory, ContentItem } from '../types/content';
 
 interface AdminDashboardModalProps {
@@ -8,8 +24,6 @@ interface AdminDashboardModalProps {
   onContentChanged: () => void;
 }
 
-const TOKEN_STORAGE_KEY = 'gaga_admin_token';
-
 const FIX_PERMISSIONS_SQL = `-- Grant API role permissions & confirm gagadeejay31@gmail.com
 grant usage on schema public to anon, authenticated;
 grant select on public.content_items to anon, authenticated;
@@ -17,7 +31,6 @@ grant insert, update, delete on public.content_items to authenticated;
 grant insert on public.inquiries to anon, authenticated;
 grant select, delete on public.inquiries to authenticated;
 
--- Confirm admin email in Supabase Auth if pending verification
 update auth.users
 set email_confirmed_at = coalesce(email_confirmed_at, now())
 where lower(email) = 'gagadeejay31@gmail.com';
@@ -31,7 +44,6 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
   const [permissionsReady, setPermissionsReady] = useState(true);
   const [copiedSql, setCopiedSql] = useState(false);
   const [adminEmail, setAdminEmail] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(() => sessionStorage.getItem(TOKEN_STORAGE_KEY));
 
   // Login / Register state for Supabase Auth
   const [authMode, setAuthMode] = useState<'LOGIN' | 'SIGNUP'>('LOGIN');
@@ -69,59 +81,34 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
   const [saveBusy, setSaveBusy] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
 
-  const authHeaders = useCallback((): Record<string, string> => {
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }, [token]);
-
   const checkStatus = useCallback(async () => {
     setStatusLoading(true);
+    setAuthError(null);
     try {
-      const res = await fetch('/api/admin/status', { headers: authHeaders() });
-      const data = (await res.json()) as {
-        authenticated: boolean;
-        email: string | null;
-        tablesExist: boolean;
-        permissionsReady: boolean;
-      };
-      setAuthenticated(data.authenticated);
-      setAdminEmail(data.email);
-      setTablesExist(data.tablesExist);
-      setPermissionsReady(data.permissionsReady);
-      if (!data.authenticated && token) {
-        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-        setToken(null);
-      }
+      const status = await checkSupabaseStatus();
+      setAuthenticated(status.authenticated);
+      setAdminEmail(status.email);
+      setTablesExist(status.tablesExist);
+      setPermissionsReady(status.permissionsReady);
     } catch {
-      setAuthError('Unable to reach server.');
+      setAuthError('Unable to reach Supabase backend.');
     } finally {
       setStatusLoading(false);
     }
-  }, [authHeaders, token]);
+  }, []);
 
   const fetchAdminData = useCallback(async () => {
     try {
-      const [contentRes, inqRes] = await Promise.all([
-        fetch('/api/admin/content', { headers: authHeaders() }),
-        fetch('/api/admin/inquiries', { headers: authHeaders() }),
+      const [contentList, inquiryList] = await Promise.all([
+        fetchAllAdminContent(),
+        fetchAdminInquiries(),
       ]);
-      if (contentRes.ok) {
-        const cData = (await contentRes.json()) as {
-          items: ContentItem[];
-          tablesExist?: boolean;
-          permissionsReady?: boolean;
-        };
-        setItems(cData.items ?? []);
-        if (typeof cData.tablesExist === 'boolean') setTablesExist(cData.tablesExist);
-        if (typeof cData.permissionsReady === 'boolean') setPermissionsReady(cData.permissionsReady);
-      }
-      if (inqRes.ok) {
-        const iData = (await inqRes.json()) as { inquiries: BookingInquiry[] };
-        setInquiries(iData.inquiries ?? []);
-      }
+      setItems(contentList);
+      setInquiries(inquiryList);
     } catch {
-      // ignore transient failures
+      // ignore transient errors
     }
-  }, [authHeaders]);
+  }, []);
 
   useEffect(() => {
     if (open) {
@@ -146,53 +133,33 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
 
     setAuthBusy(true);
     try {
-      const endpoint = authMode === 'SIGNUP' ? '/api/admin/signup' : '/api/admin/login';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: emailInput.trim(),
-          password: passwordInput,
-        }),
-      });
-      const data = (await res.json()) as {
-        authenticated?: boolean;
-        confirmationRequired?: boolean;
-        message?: string;
-        email?: string;
-        token?: string;
-        error?: string;
-      };
-      if (!res.ok) {
-        setAuthError(data.error || 'Authentication failed.');
-        return;
-      }
-      if (data.confirmationRequired) {
-        setAuthMessage(
-          data.message ||
-            'Account created. Verify your email or run the confirmation SQL, then sign in.'
-        );
-        setAuthMode('LOGIN');
+      if (authMode === 'SIGNUP') {
+        const res = await adminSignUp(emailInput, passwordInput);
+        if (res.authenticated) {
+          setAuthenticated(true);
+          setAdminEmail(ADMIN_EMAIL);
+          setPasswordInput('');
+          setConfirmPassword('');
+        } else {
+          setAuthMessage(res.message || 'Verification required. Please check your email.');
+          setAuthMode('LOGIN');
+          setPasswordInput('');
+          setConfirmPassword('');
+        }
+      } else {
+        const signedInEmail = await adminSignIn(emailInput, passwordInput);
+        setAuthenticated(true);
+        setAdminEmail(signedInEmail);
         setPasswordInput('');
-        setConfirmPassword('');
-        return;
       }
-      if (data.token) {
-        sessionStorage.setItem(TOKEN_STORAGE_KEY, data.token);
-        setToken(data.token);
-      }
-      setAuthenticated(true);
-      setAdminEmail(data.email ?? null);
-      setPasswordInput('');
-      setConfirmPassword('');
-    } catch {
-      setAuthError('Network error during authentication.');
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Authentication failed.');
     } finally {
       setAuthBusy(false);
     }
   };
 
-  const handleResendOrReset = async (kind: 'resend-confirmation' | 'reset-password') => {
+  const handleResendOrReset = async (kind: 'resend' | 'reset') => {
     setAuthError(null);
     setAuthMessage(null);
     if (!emailInput.trim()) {
@@ -201,28 +168,20 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
     }
     setAuthBusy(true);
     try {
-      const res = await fetch(`/api/admin/${kind}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: emailInput.trim() }),
-      });
-      const data = (await res.json()) as { message?: string; error?: string };
-      if (!res.ok) {
-        setAuthError(data.error || 'Request failed.');
-      } else {
-        setAuthMessage(data.message || 'Email sent.');
-      }
-    } catch {
-      setAuthError('Network error.');
+      const msg =
+        kind === 'resend'
+          ? await adminResendConfirmation(emailInput)
+          : await adminResetPassword(emailInput);
+      setAuthMessage(msg);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Request failed.');
     } finally {
       setAuthBusy(false);
     }
   };
 
   const handleLogout = async () => {
-    await fetch('/api/admin/logout', { method: 'POST' });
-    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-    setToken(null);
+    await adminSignOut();
     setAuthenticated(false);
     setAdminEmail(null);
   };
@@ -281,25 +240,14 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
     setUploadingField(target);
     setEditorError(null);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await fetch('/api/admin/upload', {
-        method: 'POST',
-        headers: authHeaders(),
-        body: formData,
-      });
-      const data = (await res.json()) as { url?: string; error?: string };
-      if (!res.ok || !data.url) {
-        setEditorError(data.error || 'File upload failed.');
-        return;
-      }
+      const publicUrl = await uploadMediaFile(file);
       if (target === 'media') {
-        setMediaUrl(data.url);
+        setMediaUrl(publicUrl);
       } else {
-        setCoverImageUrl(data.url);
+        setCoverImageUrl(publicUrl);
       }
-    } catch {
-      setEditorError('Upload error. Please try again.');
+    } catch (err) {
+      setEditorError(err instanceof Error ? err.message : 'Upload failed.');
     } finally {
       setUploadingField(null);
     }
@@ -330,65 +278,36 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
         externalUrl: externalUrl.trim(),
         published,
       };
-      const url = editingId ? `/api/admin/content/${editingId}` : '/api/admin/content';
-      const method = editingId ? 'PUT' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders(),
-        },
-        body: JSON.stringify(payload),
-      });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) {
-        setEditorError(data.error || 'Failed to save item.');
-        return;
+      if (editingId) {
+        await updateContentItem(editingId, payload);
+      } else {
+        await createContentItem(payload);
       }
       setEditorOpen(false);
       await fetchAdminData();
       onContentChanged();
-    } catch {
-      setEditorError('Network error while saving.');
+    } catch (err) {
+      setEditorError(err instanceof Error ? err.message : 'Failed to save item.');
     } finally {
       setSaveBusy(false);
     }
   };
 
   const handleDeleteItem = async (id: string) => {
-    const res = await fetch(`/api/admin/content/${id}`, {
-      method: 'DELETE',
-      headers: authHeaders(),
-    });
-    if (res.ok) {
-      await fetchAdminData();
-      onContentChanged();
-    }
+    await deleteContentItem(id);
+    await fetchAdminData();
+    onContentChanged();
   };
 
   const handleTogglePublished = async (item: ContentItem) => {
-    const res = await fetch(`/api/admin/content/${item.id}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders(),
-      },
-      body: JSON.stringify({ published: !item.published }),
-    });
-    if (res.ok) {
-      await fetchAdminData();
-      onContentChanged();
-    }
+    await updateContentItem(item.id, { published: !item.published });
+    await fetchAdminData();
+    onContentChanged();
   };
 
   const handleDeleteInquiry = async (id: string) => {
-    const res = await fetch(`/api/admin/inquiries/${id}`, {
-      method: 'DELETE',
-      headers: authHeaders(),
-    });
-    if (res.ok) {
-      await fetchAdminData();
-    }
+    await deleteAdminInquiry(id);
+    await fetchAdminData();
   };
 
   if (!open) return null;
@@ -419,7 +338,7 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
                 <span className="hidden sm:inline text-xs text-zinc-400">{adminEmail}</span>
                 <button
                   type="button"
-                  onClick={handleLogout}
+                  onClick={() => void handleLogout()}
                   className="inline-flex items-center gap-1.5 border border-white/15 px-3 py-1.5 text-xs uppercase tracking-[0.14em] text-zinc-300 hover:border-white hover:text-white cursor-pointer"
                 >
                   <LogOut className="h-3.5 w-3.5" />
@@ -447,7 +366,7 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
                 <div>
                   {!tablesExist
                     ? 'Supabase is connected, but the database tables (`content_items`, `inquiries`) have not been created yet.'
-                    : 'Your Supabase tables (`content_items`, `inquiries`) exist, but API role permissions (`GRANT`) have not been granted yet (error 42501). Run this quick SQL fix in your Supabase SQL Editor:'}
+                    : 'Your Supabase tables exist, but API role permissions (`GRANT`) need to be applied.'}
                 </div>
               </div>
               <div className="flex items-center justify-between gap-3">
@@ -472,7 +391,7 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
 
           {statusLoading ? (
             <div className="py-16 text-center text-xs uppercase tracking-[0.2em] text-zinc-400">
-              Connecting to Supabase Backend...
+              Connecting to Supabase...
             </div>
           ) : !authenticated ? (
             <div className="mx-auto max-w-md py-6">
@@ -596,14 +515,14 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-xs text-zinc-400">
                     <button
                       type="button"
-                      onClick={() => void handleResendOrReset('resend-confirmation')}
+                      onClick={() => void handleResendOrReset('resend')}
                       className="hover:text-cyan-400 underline underline-offset-4 cursor-pointer"
                     >
                       Resend verification email
                     </button>
                     <button
                       type="button"
-                      onClick={() => void handleResendOrReset('reset-password')}
+                      onClick={() => void handleResendOrReset('reset')}
                       className="hover:text-cyan-400 underline underline-offset-4 cursor-pointer"
                     >
                       Reset password

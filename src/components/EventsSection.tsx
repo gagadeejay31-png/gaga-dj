@@ -1,6 +1,7 @@
 import { ArrowUpRight, Check, X } from 'lucide-react';
 import { useState } from 'react';
 import { PRESS_PHOTO_STAGE_BANNER } from '../constants/assets';
+import { submitPublicInquiry } from '../lib/supabaseClient';
 import { ContentItem } from '../types/content';
 import { EmptySectionState } from './EmptySectionState';
 
@@ -31,19 +32,14 @@ export function EventsSection({ events }: EventsSectionProps) {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch('/api/inquiries', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'RSVP',
-          name: guestName.trim(),
-          email: guestEmail.trim(),
-          eventId: rsvpEvent.id,
-          eventTitle: rsvpEvent.title,
-          guestCount,
-        }),
+      await submitPublicInquiry({
+        type: 'RSVP',
+        name: guestName.trim(),
+        email: guestEmail.trim(),
+        eventId: rsvpEvent.id,
+        eventTitle: rsvpEvent.title,
+        guestCount,
       });
-      if (!res.ok) throw new Error('Unable to register RSVP.');
       setSubmitted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to submit RSVP.');

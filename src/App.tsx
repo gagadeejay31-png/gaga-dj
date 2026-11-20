@@ -15,6 +15,7 @@ import { MusicSection } from './components/MusicSection';
 import { Navbar } from './components/Navbar';
 import { NewsSection } from './components/NewsSection';
 import { VideosSection } from './components/VideosSection';
+import { fetchPublishedContent } from './lib/supabaseClient';
 import { ContentItem } from './types/content';
 
 export default function App() {
@@ -23,10 +24,8 @@ export default function App() {
 
   const loadPublicContent = useCallback(async () => {
     try {
-      const res = await fetch('/api/content');
-      if (!res.ok) return;
-      const data = (await res.json()) as { items?: ContentItem[] };
-      setContentItems(data.items ?? []);
+      const items = await fetchPublishedContent();
+      setContentItems(items);
     } catch {
       // keep current state on network hiccup
     }
