@@ -4,14 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "start": "NODE_ENV=production node dist/server.js",
-    "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "start": "wrangler dev",
+    "preview": "wrangler dev",
+    "clean": "rm -rf dist .wrangler",
     "lint": "tsc --noEmit",
     "deploy": "npm run build && wrangler deploy",
-    "cf:typegen": "wrangler types"
+    "cf:typegen": "wrangler types",
+    "db:migrate:local": "wrangler d1 migrations apply gaga-dj-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply gaga-dj-db --remote"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -37,6 +39,7 @@
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
     "@types/express": "^4.17.21",
-    "wrangler": "^4.50.0"
+    "wrangler": "^4.50.0",
+    "@cloudflare/workers-types": "^4.20261120.0"
   }
 }
