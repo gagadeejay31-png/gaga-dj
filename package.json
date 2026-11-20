@@ -39,7 +39,7 @@
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
     "@types/express": "^4.17.21",
-    "wrangler": "^4.50.0",
-    "@cloudflare/workers-types": "^4.20261120.0"
+    "wrangler": "^4.0.0",
+    "@cloudflare/workers-types": "^4.0.0"
   }
 }
