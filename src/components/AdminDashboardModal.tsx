@@ -8,14 +8,11 @@ interface AdminDashboardModalProps {
   onContentChanged: () => void;
 }
 
-const TOKEN_STORAGE_KEY = 'gaga_admin_token';
-
 export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDashboardModalProps) {
   const [statusLoading, setStatusLoading] = useState(true);
   const [setupRequired, setSetupRequired] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [adminEmail, setAdminEmail] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(() => sessionStorage.getItem(TOKEN_STORAGE_KEY));
 
   // Login / Setup form state
   const [emailInput, setEmailInput] = useState('');
@@ -51,9 +48,8 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
   const [saveBusy, setSaveBusy] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
 
-  const authHeaders = useCallback((): Record<string, string> => {
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }, [token]);
+  // Authentication is carried by the server-issued HttpOnly session cookie.
+  const authHeaders = useCallback((): Record<string, string> => ({}), []);
 
   const checkStatus = useCallback(async () => {
     setStatusLoading(true);
@@ -67,16 +63,12 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
       setSetupRequired(data.setupRequired);
       setAuthenticated(data.authenticated);
       setAdminEmail(data.email);
-      if (!data.authenticated && token) {
-        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-        setToken(null);
-      }
     } catch {
       setAuthError('Unable to reach server.');
     } finally {
       setStatusLoading(false);
     }
-  }, [authHeaders, token]);
+  }, [authHeaders]);
 
   const fetchAdminData = useCallback(async () => {
     try {
@@ -131,16 +123,11 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
       const data = (await res.json()) as {
         authenticated?: boolean;
         email?: string;
-        token?: string;
         error?: string;
       };
       if (!res.ok) {
         setAuthError(data.error || 'Authentication failed.');
         return;
-      }
-      if (data.token) {
-        sessionStorage.setItem(TOKEN_STORAGE_KEY, data.token);
-        setToken(data.token);
       }
       setAuthenticated(true);
       setSetupRequired(false);
@@ -156,8 +143,6 @@ export function AdminDashboardModal({ open, onClose, onContentChanged }: AdminDa
 
   const handleLogout = async () => {
     await fetch('/api/admin/logout', { method: 'POST' });
-    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-    setToken(null);
     setAuthenticated(false);
     setAdminEmail(null);
   };
